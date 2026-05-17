@@ -7,5 +7,6 @@
 pub mod config;
 pub mod history;
 pub mod logs;
+pub mod policy;
 pub mod trace;
 pub mod usage;

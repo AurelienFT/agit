@@ -17,9 +17,11 @@ repository = "https://github.com/aurelienfoucault/agit"
 [workspace.dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
+globset = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yml = "0.0.12"
+tempfile = "3"
 
 [profile.release]
 lto = "thin"
