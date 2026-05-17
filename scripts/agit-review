@@ -77,7 +77,8 @@ WORKSPACE=$(mktemp -d -t agit-review.XXXXXX)
 PROMPT_FILE=$(mktemp -t agit-review-prompt.XXXXXX)
 CLAUDE_OUT=$(mktemp -t agit-review-out.XXXXXX)
 REVIEW_BODY=$(mktemp -t agit-review-body.XXXXXX)
-trap 'rm -rf "$WORKSPACE"; rm -f "$PROMPT_FILE" "$CLAUDE_OUT" "$REVIEW_BODY"' EXIT
+REVIEW_ERR=$(mktemp -t agit-review-err.XXXXXX)
+trap 'rm -rf "$WORKSPACE"; rm -f "$PROMPT_FILE" "$CLAUDE_OUT" "$REVIEW_BODY" "$REVIEW_ERR"' EXIT
 
 echo "→ Cloning $REPO @ $HEAD into $WORKSPACE..."
 # --no-single-branch keeps the default +refs/heads/*:refs/remotes/origin/*
@@ -134,7 +135,19 @@ cd - >/dev/null
 case "$VERDICT" in
   approve)
     echo "→ Verdict: APPROVE. Posting review and merging."
-    gh pr review "$PR" --approve --body-file "$REVIEW_BODY"
+    # GitHub forbids approving your own PR; when the runner's gh user
+    # authored the PR, fall back to a plain comment so the verdict is
+    # still recorded, then proceed to merge.
+    if ! gh pr review "$PR" --approve --body-file "$REVIEW_BODY" 2> "$REVIEW_ERR"; then
+      cat "$REVIEW_ERR" >&2
+      if grep -q 'Can not approve your own pull request' "$REVIEW_ERR"; then
+        echo "→ Cannot approve own PR; posting verdict as a comment instead."
+        gh pr comment "$PR" --body-file "$REVIEW_BODY"
+      else
+        echo "ERR: gh pr review --approve failed for a reason other than self-approval." >&2
+        exit 1
+      fi
+    fi
     if ! gh pr merge "$PR" --squash --delete-branch --auto 2>/dev/null; then
       gh pr merge "$PR" --squash --delete-branch || {
         echo "WARN: merge failed (branch protection? failing checks?). Leaving for human merge."
@@ -144,7 +157,18 @@ case "$VERDICT" in
     ;;
   changes)
     echo "→ Verdict: REQUEST_CHANGES. Posting review and handing off to agit:retry."
-    gh pr review "$PR" --request-changes --body-file "$REVIEW_BODY"
+    # GitHub also forbids requesting changes on your own PR; same fallback
+    # to a plain comment so the verdict is preserved on the timeline.
+    if ! gh pr review "$PR" --request-changes --body-file "$REVIEW_BODY" 2> "$REVIEW_ERR"; then
+      cat "$REVIEW_ERR" >&2
+      if grep -q -E 'Can not (approve|request changes on) your own pull request' "$REVIEW_ERR"; then
+        echo "→ Cannot request changes on own PR; posting verdict as a comment instead."
+        gh pr comment "$PR" --body-file "$REVIEW_BODY"
+      else
+        echo "ERR: gh pr review --request-changes failed for a reason other than self-review." >&2
+        exit 1
+      fi
+    fi
     gh pr edit "$PR" --add-label "agit:retry"
     ;;
 esac
