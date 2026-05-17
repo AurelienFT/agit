@@ -252,18 +252,24 @@ fn poll_once(
 }
 
 fn fetch_labeled_issues(directory: &Path) -> Result<Vec<GhIssue>> {
-    let mut cmd = Command::new("gh");
-    cmd.current_dir(directory)
-        .arg("issue")
-        .arg("list")
-        .arg("--state")
-        .arg("open")
-        .arg("--json")
-        .arg("number,title,labels");
-    for (label, _) in LABEL_TO_SLUG {
-        cmd.arg("--label").arg(label);
-    }
-    let out = cmd.output().context("running `gh issue list`")?;
+    // NOTE: `gh issue list --label A --label B` is AND-joined, not OR.
+    // We want OR semantics (any agit:* label), so we fetch open issues and
+    // filter client-side via `pick_agit_label`. --limit 200 is plenty for
+    // any sane backlog; bump when needed.
+    let out = Command::new("gh")
+        .current_dir(directory)
+        .args([
+            "issue",
+            "list",
+            "--state",
+            "open",
+            "--limit",
+            "200",
+            "--json",
+            "number,title,labels",
+        ])
+        .output()
+        .context("running `gh issue list`")?;
     if !out.status.success() {
         return Err(anyhow!(
             "gh issue list failed: {}",
