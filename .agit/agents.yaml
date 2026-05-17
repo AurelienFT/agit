@@ -98,7 +98,9 @@ agents:
 
   # ─── feature_engineer ─────────────────────────────────────────────────────
   # Wider permissions — this is the agent meant to implement code features.
-  # Still locked out of secrets, the GHA workflow, and lockfiles.
+  # Still locked out of secrets and the GHA workflow. Cargo.lock is allowed:
+  # adding a dependency is legitimate feature work, and the lock change is the
+  # mechanical consequence of an allowed Cargo.toml edit.
   feature_engineer:
     description: "Implements small features in crates/ when an issue is labeled agit:feature."
     provider: "claude_code"
@@ -116,6 +118,7 @@ agents:
         - "crates/**/tests/**"
         - "crates/**/Cargo.toml"
         - "Cargo.toml"
+        - "Cargo.lock"
       commands:
         allow:
           - "cargo build"
