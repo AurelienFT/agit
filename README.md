@@ -117,7 +117,7 @@ Details: [docs/BUSINESS_MODEL.md](docs/BUSINESS_MODEL.md).
 
 ## Developing Agit by labeling issues
 
-This repo is set up to develop itself via Agit. Open a GitHub issue with one of the templates:
+This repo is set up to develop itself via Agit. The loop is: open an issue with a label, a PR comes back.
 
 | Label | Agent | What it does |
 |---|---|---|
@@ -125,19 +125,23 @@ This repo is set up to develop itself via Agit. Open a GitHub issue with one of 
 | `agit:doc` | `doc_updater` | Updates Markdown documentation. |
 | `agit:feature` | `feature_engineer` | Implements small features in `crates/**/src`. |
 
-The flow is split between GitHub and your machine to keep the trust posture clean — **no Anthropic API key is stored in GitHub**:
+There is **one process to launch**, on your machine, after a one-time setup:
 
-1. **GitHub Actions** (`.github/workflows/agit-runner.yml`) validates `.agit/agents.yaml`, confirms the label maps to a declared agent, and comments on the issue with the exact command to run locally.
-2. **Locally**, you run `./scripts/agit-run <issue-number>`. The script:
-   - Builds the prompt from `.agit/prompts/<agent>.md` + the issue title and body.
-   - Invokes your local `claude` CLI headlessly (`claude --print --allowedTools …`). Authentication is whatever `claude` already has on your machine — Anthropic's terms apply to that session the same way they apply to any interactive Claude Code use.
-   - Runs the post-flight policy check (write globs + deny-by-default lockfiles / `.env*` / `.git/**`).
-   - Runs the agent's allowed commands (`cargo test`, etc.).
-   - Pushes a branch and opens a PR.
+```bash
+cargo run --release -p agit-runner -- watch
+```
 
-This is the *GitHub-Actions trigger + local runner* shape of the architecture. When the `agit-runner` binary is fully implemented, `scripts/agit-run` shrinks to a `agit-runner run-once` wrapper.
+`agit-runner watch` polls open labeled issues every 30s. For each new one it spots, it shells out to `scripts/agit-run <issue#>`, which:
 
-One-time setup (push the repo, create labels, install local CLIs): **[SETUP.md](SETUP.md)**. Workflow details + classic contribution path: **[CONTRIBUTING.md](CONTRIBUTING.md)**.
+- Builds the prompt from `.agit/prompts/<agent>.md` + the issue title and body.
+- Invokes your local `claude` CLI headlessly. **Authentication is whatever `claude` already has on your machine** — Anthropic's terms apply to that session the same way they apply to any interactive Claude Code use. No API key, no GitHub secret.
+- Runs the post-flight policy check (write globs + deny-by-default lockfiles / `.env*` / `.git/**`).
+- Runs the agent's allowed commands (`cargo test`, etc.).
+- Pushes a branch and opens a PR via `gh`.
+
+The daemon is idempotent: it skips any issue whose `agit/<agent>/issue-<n>` branch already exists on origin. Stop it with Ctrl-C.
+
+One-time setup (push the repo, create labels, install local CLIs, `claude /login`): **[SETUP.md](SETUP.md)**. Workflow details + classic contribution path: **[CONTRIBUTING.md](CONTRIBUTING.md)**.
 
 ## Docs
 

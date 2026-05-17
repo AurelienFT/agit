@@ -1,47 +1,42 @@
 # Setup — running Agit on this repo
 
-This document is a one-time checklist to get the **Agit-on-Agit** workflow live: opening a GitHub issue with the right label tells you exactly which command to run locally, and a single command opens a PR back at you.
+One-time checklist to start using Agit on this repo. After this, the loop is: open an issue with a label, watch a PR come back.
 
 ## Trust model (read this first)
 
-- **No Anthropic API key is stored in GitHub.** GitHub Actions never sees one.
-- **Claude Code runs on your machine**, with whatever authentication you already use (`/login` against your Pro/Max subscription, or Bedrock / Vertex / your own setup — Claude Code's choice, not Agit's).
-- Anthropic's terms apply to your local Claude Code usage exactly the same as in any interactive session. Agit does not wrap or proxy that — it just hands a prompt to your `claude` binary.
+- **No Anthropic API key is stored in GitHub.** No secret to configure.
+- **Claude Code runs on your machine**, with whatever authentication you already use (`claude /login`, Bedrock, Vertex — Claude Code's choice, not Agit's).
+- Anthropic's terms apply to your local Claude Code usage exactly the same as in any interactive session.
+- Agit Cloud (when it exists) and GitHub Actions never see model credentials. The daemon described below runs on **your** machine.
 
-GitHub Actions plays a small role: it validates `.agit/agents.yaml` on each label and posts a comment with the exact command to run locally. That's it.
-
-## 1. Push the repo
+## 1. Push the repo (already done if you're reading this on GitHub)
 
 ```bash
-git init -b main           # if not already initialized
-git add -A
-git commit -m "agit: initial commit"
 gh repo create agit --public --source . --remote origin --push
-# or: git remote add origin git@github.com:<you>/agit.git && git push -u origin main
 ```
 
 ## 2. Install local prerequisites
 
-On the machine where you'll actually run agents (your laptop, an internal server, anywhere):
+On the machine where the daemon will run:
 
 | Tool | Why |
 |---|---|
-| `cargo` (Rust stable) | builds `agit-cli` and runs the test suite |
-| `gh` ([GitHub CLI](https://cli.github.com/)) | reads issues, opens PRs |
-| `jq` | parses `gh` JSON output |
+| `cargo` (Rust stable) | builds `agit-runner` and `agit-cli` |
+| `gh` ([GitHub CLI](https://cli.github.com/)) | reads issues, opens PRs, polls labels |
+| `jq` | parses `gh` JSON in `scripts/agit-run` |
 | `python3` | runs the post-flight policy check |
 | `claude` ([Claude Code](https://docs.anthropic.com/claude-code)) | the actual coding agent |
 
-Then authenticate the tools you need:
+Authenticate the tools that need it:
 
 ```bash
 gh auth login           # GitHub
-claude /login           # Claude Code (one-time, opens a browser)
+claude /login           # Claude Code (browser-based, one-time)
 ```
 
-Both keep their credentials on your machine. Neither is stored in GitHub.
+Both keep their credentials on your machine.
 
-## 3. Create the labels (one-time, on the repo)
+## 3. Create the labels (one-time, on the GitHub repo)
 
 ```bash
 gh label create "agit:test"    --color FBCA04 --description "Triggers test_writer (Rust tests)"
@@ -49,83 +44,78 @@ gh label create "agit:doc"     --color 0E8A16 --description "Triggers doc_update
 gh label create "agit:feature" --color 1D76DB --description "Triggers feature_engineer (small features in crates/)"
 ```
 
-Reference: [.github/labels.yml](.github/labels.yml).
+## 4. Launch the daemon
 
-## 4. (Optional) Allow the workflow to push branches/PRs from `agit-runner`
+```bash
+cargo run --release -p agit-runner -- watch
+```
 
-Even though the workflow no longer invokes a model, it still posts comments. `GITHUB_TOKEN` covers that by default. The actual PRs are opened by **you** running `gh pr create` from `scripts/agit-run`, using your own GitHub auth.
+Leave it running. On the first start it:
 
-If you later evolve the workflow to open PRs server-side, enable:
+- Validates `.agit/agents.yaml`.
+- Confirms `gh` and `git` are on PATH.
+- Looks for `scripts/agit-run` next to it.
 
-- **Settings → Actions → General → Workflow permissions** → "Read and write permissions" + "Allow GitHub Actions to create and approve pull requests".
+Then it polls GitHub every 30 seconds for open issues labeled with one of:
+
+- `agit:test` → runs the `test_writer` agent
+- `agit:doc` → runs the `doc_updater` agent
+- `agit:feature` → runs the `feature_engineer` agent
+
+For each new labeled issue, the daemon calls `scripts/agit-run <issue#>` which:
+
+1. Creates branch `agit/<agent>/issue-<n>` on top of the default branch.
+2. Builds the prompt from `.agit/prompts/<agent>.md` + the issue title and body.
+3. Invokes `claude --print --allowedTools <…>` headlessly. Your local Claude Code auth is used.
+4. Runs the post-flight policy check (write globs + deny-by-default lockfiles / `.env*` / `.git/**`).
+5. Runs the agent's allowed commands (`cargo test`, etc.).
+6. Pushes the branch and opens a PR via `gh`.
+
+Idempotency: the daemon checks whether `agit/<agent>/issue-<n>` already exists on `origin` and skips issues that have already been handled. Re-labeling an issue does not re-trigger the run; delete the branch to force a re-run.
+
+### Useful flags
+
+```bash
+cargo run --release -p agit-runner -- watch --interval 15        # poll every 15s
+cargo run --release -p agit-runner -- watch --dry-run            # log what would run, don't execute
+cargo run --release -p agit-runner -- watch -C /path/to/clone    # watch a different checkout
+```
 
 ## 5. Try it
 
-1. Open an issue using one of the three templates (`Test request`, `Doc update`, or `Feature request`). The template applies the right `agit:*` label automatically.
-2. Watch **Actions → agit-runner**. The workflow runs `agit validate`, confirms the agent exists, and **comments on your issue** with the exact command:
-   ```bash
-   ./scripts/agit-run <issue-number>
+1. Open an issue on GitHub using one of the templates (`Test request`, `Doc update`, or `Feature request`). The template applies the matching `agit:*` label automatically.
+2. Within ~30 seconds, the daemon picks it up and prints something like:
    ```
-3. On your local clone, run that command. The script:
-   - Pulls the latest default branch.
-   - Creates `agit/<agent>/issue-<n>`.
-   - Builds the prompt from `.agit/prompts/<agent>.md` + the issue title + body.
-   - Invokes `claude --print --allowedTools <…>` headlessly.
-   - Runs the post-flight policy check (allowed write globs + deny-by-default lockfiles / `.env*` / `.git/**`).
-   - Runs the agent's allowed commands (e.g. `cargo test`).
-   - Pushes the branch and opens a PR via `gh`.
+   agit-runner: → issue #1 [agit:feature] add foo
+   agit-runner:   ✓ done
+   ```
+3. A PR shows up on GitHub.
 4. Review the PR like any other.
-
-To pick an issue interactively:
-
-```bash
-./scripts/agit-run --list      # list open agit-labeled issues
-./scripts/agit-run 42          # run against issue #42
-./scripts/agit-run --help
-```
 
 ## 6. What's wired up vs. what's still stubs
 
 Wired and working today:
 
-- `.agit/agents.yaml` parsed and validated by `agit-cli` (`agit validate`).
-- `.github/workflows/agit-runner.yml` — validates config and tells you what to run locally. **No API key, no model invocation in CI.**
+- `.agit/agents.yaml` parsed and validated by `agit-cli`.
+- `agit-runner watch` is a real polling daemon (this file's main subject).
+- `scripts/agit-run` invokes Claude Code locally, runs the policy check, opens the PR.
 - `.github/workflows/ci.yml` — `cargo fmt --check`, `cargo clippy`, `cargo test`, `agit validate` on every push and PR.
-- `scripts/agit-run` — local runner. Hands the prompt to your `claude` CLI, runs the policy check, opens a PR.
 
-Stubs (Rust binaries that compile but don't yet do their full job):
+Still stubs:
 
-- `agit-runner start` — would long-poll an `agit-server` for missions. Today: prints intent and exits. `scripts/agit-run` plays its role for now.
-- `agit-server serve` — would expose webhooks + dashboard. Today: prints intent and exits.
+- `agit-runner start --server <url>` — the mission-API mode. Today: prints intent and exits. `watch` covers the "no server" use case end-to-end.
+- `agit-server serve` — the control-plane HTTP server. Today: prints intent and exits.
 
-Migration path: when `agit-runner` is fully implemented, `scripts/agit-run` shrinks to a `agit-runner run-once` wrapper, and the same workflow can either be retired or kept as a "comment with run instructions" trigger.
+Migration path: when `agit-server` is implemented, `agit-runner watch` keeps working for users who want a fully self-hosted, no-server-needed setup. `agit-runner start` becomes the path for orgs that want a managed dashboard.
 
-## 7. Cost & safety knobs
+## 7. Disabling / stopping
 
-Each agent has `limits` in `.agit/agents.yaml`:
-
-```yaml
-limits:
-  max_iterations: 10
-  max_files_changed: 20
-  max_cost_usd: 5.00
-```
-
-These will be enforced by the runner once it's implemented. Today, the budget is whatever your local Claude Code subscription or quota allows — same as any interactive Claude Code session.
-
-## 8. Disabling the workflow
-
-```bash
-gh workflow disable agit-runner.yml
-# re-enable with: gh workflow enable agit-runner.yml
-```
-
-`scripts/agit-run` keeps working regardless — you can just run agents locally without ever triggering the workflow.
+Stop the daemon with `Ctrl-C`. To prevent it from running on a given machine, just don't launch it. There is no GitHub-side state.
 
 ## Troubleshooting
 
-- **Workflow doesn't run on a label** → check the label spelling matches exactly (`agit:test`, with a colon, no space).
-- **`claude --allowedTools` reports "unknown option"** → flag names have varied across Claude Code releases. Swap `--allowedTools` for `--allowed-tools` in `scripts/agit-run`, or check `claude --help`.
+- **Daemon says `gh issue list failed`** → run `gh auth status` and check the token has `repo` scope.
+- **Daemon keeps retrying the same issue** → the agent ran but failed (likely a policy violation or `claude` exited non-zero). Run `scripts/agit-run <N>` manually to see the full output, fix the issue (or the policy), then re-run.
+- **`claude --allowedTools` reports "unknown option"** → flag names have varied. Swap for `--allowed-tools` in `scripts/agit-run`, or check `claude --help`.
 - **Policy check rejects everything** → run `cargo run -p agit-cli -- show <agent>` to see the agent's allowed write globs. The post-flight check uses the same patterns.
-- **PR isn't created** → confirm `gh auth status` is happy and your token has `repo` scope.
-- **`claude` opens a login flow instead of running** → run `claude /login` once to authenticate; the script then runs headless.
+- **`claude` opens a login flow instead of running** → run `claude /login` once to authenticate; the daemon then runs headless.

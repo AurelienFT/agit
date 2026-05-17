@@ -45,24 +45,23 @@ See `CLAUDE.md` for the longer "what to do / what to avoid" reference.
 
 ## Working with an Agit agent
 
-The flow is split deliberately to keep the trust posture clean: **GitHub Actions triggers, your local `claude` does the work**. No Anthropic API key is stored in GitHub.
+A local daemon (`agit-runner watch`) does everything; you only label issues on GitHub.
 
 1. You open an issue with one of the `agit:*` labels.
-2. `.github/workflows/agit-runner.yml` runs: validates `.agit/agents.yaml`, confirms the label maps to a declared agent, and **comments on the issue** with the exact command to run locally — something like:
-   ```bash
-   ./scripts/agit-run <issue-number>
-   ```
-3. On a machine where Claude Code is installed and authenticated, you run that command. `scripts/agit-run`:
+2. The daemon (running on your machine) polls open issues every 30s. When it spots one with an `agit:*` label and no matching branch yet, it acts.
+3. The daemon delegates to `scripts/agit-run <issue#>`, which:
    - Resolves the matching agent from `.agit/agents.yaml`.
    - Creates `agit/<agent>/issue-<n>` off the default branch.
    - Builds the prompt from the agent's `.agit/prompts/<agent>.md` + the issue title and body.
    - Invokes `claude --print --allowedTools <…>` headlessly. **Authentication is whatever your local `claude` has** (Pro/Max OAuth, Bedrock, Vertex, etc.) — same as any interactive session.
-   - Runs the post-flight policy check on the diff (mirrors the future `agit-core::policy`). A change to a path outside the agent's `permissions.write` is blocked here, not at review time.
+   - Runs the post-flight policy check on the diff. A change to a path outside the agent's `permissions.write` is blocked here, not at review time.
    - Runs the agent's allowed commands (`cargo test`, etc.).
    - Pushes the branch and opens a PR via `gh`.
 4. You review the PR like any other.
 
-This is the "GitHub Actions + local runner" deployment shape of the architecture. When the full `agit-runner` binary is implemented, `scripts/agit-run` shrinks to a `agit-runner run-once` wrapper without changing the rest.
+No Anthropic API key in GitHub. No GitHub webhook. No public URL to expose. Just one process you run on your machine — see [SETUP.md](SETUP.md).
+
+When the full `agit-server` is implemented, `agit-runner watch` keeps working for users who don't want a managed dashboard; `agit-runner start` becomes the path for orgs that do.
 
 ### Picking the right label
 

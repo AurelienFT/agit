@@ -145,10 +145,12 @@ Run them with `cargo run -p <package> -- <args>` (e.g. `cargo run -p agit-cli --
 **Currently implemented**:
 
 - `agit list` / `agit providers` / `agit show <name>` / `agit validate` — read the YAML, validate the schema, cross-validate `agent.provider` references.
-- `agit-runner check` — load the YAML and emit declared providers (placeholder until real probing lands).
-- `agit-runner start` and `agit-server serve` — flag scaffolds only, print "not implemented yet".
+- `agit-runner watch` — **real polling daemon**. Watches the GitHub repo (via `gh` CLI) for issues labeled `agit:test`, `agit:doc`, `agit:feature`. For each new one (idempotency via `agit/<agent>/issue-<n>` branch existence), it shells out to `scripts/agit-run <N>`, which builds the prompt, invokes the local `claude` CLI headlessly, runs the policy check, and opens a PR. This is the "no server" deployment shape — covers the full Agit loop on the user's machine without any HTTP component.
+- `agit-runner check` — diagnostic (placeholder for real PATH/env probing).
+- `agit-runner start --server <url>` — stub for the mission-API mode (paired with a future `agit-server`).
+- `agit-server serve` — scaffold; HTTP and webhooks not implemented yet.
 
-**Not implemented yet**: HTTP listener and webhook receiver in `agit-server`; mission polling, repo clone, provider invocation, policy engine, PR push in `agit-runner`. Scope ahead in [docs/POC.md](docs/POC.md).
+**Not implemented yet**: HTTP listener and webhook receiver in `agit-server`; real `agit-core::policy` (the script's Python policy check stands in for now). Scope ahead in [docs/POC.md](docs/POC.md).
 
 ## Target stack
 
