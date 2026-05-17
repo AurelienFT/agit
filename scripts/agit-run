@@ -99,7 +99,7 @@ case "$LABEL" in
   agit:feature)
     AGENT=feature_engineer
     BRANCH_PREFIX="agit/feature/"
-    WRITE_GLOBS='crates/**/src/**,crates/**/tests/**,crates/**/Cargo.toml,Cargo.toml'
+    WRITE_GLOBS='crates/**/src/**,crates/**/tests/**,crates/**/Cargo.toml,Cargo.toml,Cargo.lock'
     ALLOWED_TOOLS='Read,Edit,Write,Bash(cargo build:*),Bash(cargo test:*),Bash(cargo check:*),Bash(cargo fmt:*),Bash(cargo clippy:*)'
     ALLOWED_COMMANDS='cargo build,cargo test,cargo check,cargo fmt --check,cargo clippy'
     ;;
@@ -131,9 +131,25 @@ git pull --quiet --ff-only
 echo "→ Creating branch $BRANCH"
 git checkout --quiet -B "$BRANCH"
 
+# From this point on, any failure must leave the tree clean and put us back on
+# the default branch — otherwise the agit-runner loop will be wedged forever
+# on the "working tree is not clean" pre-flight check at the next iteration.
+WORKING_BRANCH_CREATED=1
+
 # ─── build the prompt: system prompt from .agit/prompts + issue context ─────
 PROMPT_FILE=$(mktemp -t agit-prompt.XXXXXX)
-trap 'rm -f "$PROMPT_FILE"' EXIT
+
+cleanup_on_exit() {
+  local exit_code=$?
+  rm -f "${PROMPT_FILE:-}" "${PR_BODY_FILE:-}" 2>/dev/null || true
+  if [ "$exit_code" -ne 0 ] && [ "${WORKING_BRANCH_CREATED:-0}" -eq 1 ]; then
+    echo "→ Run failed (exit $exit_code) — resetting working tree to $DEFAULT_BRANCH so the runner can retry cleanly." >&2
+    git reset --hard --quiet 2>/dev/null || true
+    git clean -fd --quiet 2>/dev/null || true
+    git checkout --quiet "$DEFAULT_BRANCH" 2>/dev/null || true
+  fi
+}
+trap cleanup_on_exit EXIT
 {
   cat "$PROMPT_PATH"
   printf '\n---\nIssue context:\n\nTitle: %s\n\nBody:\n%s\n' "$ISSUE_TITLE" "$ISSUE_BODY"
@@ -161,8 +177,11 @@ fi
 ALLOWED_GLOBS="$WRITE_GLOBS" python3 - <<'PYEOF'
 import fnmatch, os, sys, subprocess
 allowed = [p for p in os.environ["ALLOWED_GLOBS"].split(",") if p]
+# Hard deny list — always blocked, regardless of the agent's write globs.
+# Lockfiles are NOT here: they're language-ecosystem files where the agent's
+# per-glob allowlist is the right gate (feature_engineer needs them when
+# adding deps; test_writer / doc_updater don't list them and stay blocked).
 forbidden = [".env", ".env.*", "**/.env", "**/.env.*",
-             "Cargo.lock", "package-lock.json", "pnpm-lock.yaml", "yarn.lock",
              ".git/**", "**/secrets/**"]
 diff = subprocess.check_output(["git", "diff", "--name-only"], text=True).splitlines()
 violations = []
@@ -204,7 +223,6 @@ git push -q -u origin "$BRANCH"
 # because bash's parser mis-handles apostrophes inside $(<<EOF ... EOF) and
 # bails with "unexpected EOF while looking for matching `''".
 PR_BODY_FILE=$(mktemp -t agit-pr-body.XXXXXX)
-trap 'rm -f "$PROMPT_FILE" "$PR_BODY_FILE"' EXIT
 {
   printf '## Agit run\n\n'
   printf 'Agent: `%s`\n' "$AGENT"
