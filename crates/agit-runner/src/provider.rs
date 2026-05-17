@@ -10,12 +10,6 @@
 //! using whatever auth the operator has there (Claude Code OAuth, API keys
 //! in env vars, etc.). The server never sees the prompt or the response.
 
-// The orchestrators (run / review / retry) call into this module in the
-// commits that follow. The `dead_code` allow keeps the intermediate commit
-// warning-clean and is removed once those land — at which point dropping it
-// would surface real regressions.
-#![allow(dead_code)]
-
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};

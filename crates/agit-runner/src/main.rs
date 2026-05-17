@@ -9,8 +9,12 @@
 //! model credentials, or local CLIs. Neither code nor secrets are transmitted
 //! to a server beyond status updates the operator chose to send back.
 
+mod agent;
+mod gh;
+mod git;
 mod history_api;
 mod provider;
+mod run;
 
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
@@ -174,19 +178,20 @@ fn watch(directory: &Path, interval: u64, dry_run: bool) -> Result<()> {
         .canonicalize()
         .with_context(|| format!("could not resolve {}", directory.display()))?;
 
-    // Pre-flight: the config must be valid, gh must be available, all three scripts must exist.
+    // Pre-flight: the config must be valid; gh + git must be on PATH.
     let config_path = directory.join(".agit").join("agents.yaml");
-    agit_core::config::AgitConfig::load(&config_path)
+    let config = agit_core::config::AgitConfig::load(&config_path)
         .with_context(|| format!("invalid Agit config at {}", config_path.display()))?;
 
     require_cli("gh")?;
     require_cli("git")?;
 
-    let run_script = directory.join("scripts").join("agit-run");
+    // Review + retry are not yet ported to Rust; their scripts are still
+    // required during the transition. They go away in the commits that follow.
     let review_script = directory.join("scripts").join("agit-review");
     let retry_script = directory.join("scripts").join("agit-retry");
     if !dry_run {
-        for s in [&run_script, &review_script, &retry_script] {
+        for s in [&review_script, &retry_script] {
             if !s.exists() {
                 return Err(anyhow!(
                     "expected runner script at {} — make sure you're in the Agit repo root",
@@ -218,7 +223,7 @@ fn watch(directory: &Path, interval: u64, dry_run: bool) -> Result<()> {
 
     loop {
         let mut processed = 0usize;
-        match poll_issues(&directory, &run_script, dry_run, &mut seen_issues) {
+        match poll_issues(&directory, &config, dry_run, &mut seen_issues) {
             Ok(n) => processed += n,
             Err(e) => eprintln!("agit-runner: issue poll error: {e:#}"),
         }
@@ -242,7 +247,7 @@ fn watch(directory: &Path, interval: u64, dry_run: bool) -> Result<()> {
 
 fn poll_issues(
     directory: &Path,
-    script: &Path,
+    config: &agit_core::config::AgitConfig,
     dry_run: bool,
     seen: &mut HashSet<u64>,
 ) -> Result<usize> {
@@ -272,16 +277,15 @@ fn poll_issues(
 
         if dry_run {
             eprintln!(
-                "agit-runner:   (dry-run) would run: {} {}",
-                script.display(),
-                issue.number
+                "agit-runner:   (dry-run) would handle issue #{} via agent matching label {}",
+                issue.number, label
             );
             seen.insert(issue.number);
             processed += 1;
             continue;
         }
 
-        match run_script_with_number(directory, script, issue.number) {
+        match run::handle_issue(directory, config, issue.number) {
             Ok(()) => {
                 eprintln!("agit-runner:   ✓ done");
                 seen.insert(issue.number);
