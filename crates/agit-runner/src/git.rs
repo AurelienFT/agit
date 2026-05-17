@@ -3,10 +3,6 @@
 //! Same rationale as `gh.rs`: shell out so the operator's existing config
 //! (user.email, signing, credential helpers, …) is respected as-is.
 
-// Same rationale as gh.rs: several helpers serve review/retry, which land
-// in the commits that follow this one.
-#![allow(dead_code)]
-
 use std::path::Path;
 use std::process::{Command, Stdio};
 

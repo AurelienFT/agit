@@ -5,12 +5,6 @@
 //! (PAT, OAuth, Codespaces token, gh-app token, …), and matches the
 //! trust-model promise — credentials never leave the runner.
 
-// Several helpers are used by review/retry only (added together with the
-// run-orchestrator port so the gh surface is one cohesive module). The
-// allow goes away as those orchestrators land — once they do, removing it
-// would catch real regressions.
-#![allow(dead_code)]
-
 use std::path::Path;
 use std::process::Command;
 

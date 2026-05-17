@@ -252,7 +252,7 @@ fn poll_issues(
             continue;
         }
 
-        if remote_branch_exists(directory, &branch)? {
+        if git::remote_branch_exists(directory, &branch)? {
             seen.insert(issue.number);
             continue;
         }
@@ -437,17 +437,6 @@ fn pick_agit_label(issue: &GhIssue) -> Option<(&'static str, &'static str)> {
         }
     }
     None
-}
-
-fn remote_branch_exists(directory: &Path, branch: &str) -> Result<bool> {
-    let status = Command::new("git")
-        .current_dir(directory)
-        .args(["ls-remote", "--exit-code", "--heads", "origin", branch])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .context("running `git ls-remote`")?;
-    Ok(status.success())
 }
 
 fn require_cli(name: &str) -> Result<()> {

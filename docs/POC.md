@@ -130,11 +130,11 @@ The demo's payoff line: *the agent's intent does not override the team's policy 
 - `agents.<name>` (`description`, `provider`, `prompt`, `trigger`, `permissions`, `output`, `limits`).
 - Cross-validated: every `agent.provider` must reference a declared provider.
 
-### 4. Policy engine (`agit-core::policy`, not yet implemented)
+### 4. Policy engine (`agit-core::policy`)
 
-Pure, synchronous. Takes a parsed `PermissionPolicy` + a parsed diff + the list of commands the agent intended to run, returns `Ok(())` or a `PolicyViolation`. No I/O.
+Pure, synchronous, globset-backed. `PolicyChecker::from_write_globs(...)` compiles an agent's `permissions.write`, and `check(paths)` returns a `Vec<PolicyViolation>` (empty when the diff is in-policy). A hard deny list (`.env*`, `.git/**`, `**/secrets/**`) is always enforced regardless of the agent's globs.
 
-This is what unlocks the sad-path demo.
+This is what unlocks the sad-path demo. Wired into `agit-runner` for issue/retry orchestrators today; will be reused by `agit-cli policy-check` and the server's per-Run report.
 
 ### 5. Provider implementations in `agit-runner`
 

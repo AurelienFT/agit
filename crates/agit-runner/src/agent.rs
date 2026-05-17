@@ -5,10 +5,6 @@
 //! live in the bash scripts as hand-written case statements. It now lives
 //! here, derived entirely from the YAML.
 
-// `match_pr_label` and `match_branch_prefix` are reached by review/retry,
-// which land in the commits that follow.
-#![allow(dead_code)]
-
 use agit_core::config::{AgentConfig, AgitConfig, TriggerConfig};
 use anyhow::{anyhow, Result};
 
