@@ -1,0 +1,126 @@
+# Agit running on Agit itself.
+#
+# Three agents wired up to develop this repo via GitHub issues:
+#   - test_writer       (label: agit:test)    — adds Rust integration tests
+#   - doc_updater       (label: agit:doc)     — updates Markdown documentation
+#   - feature_engineer  (label: agit:feature) — implements small features in crates/
+#
+# These agents are executed by .github/workflows/agit-runner.yml, which is the
+# "GitHub Actions deployment shape" of agit-runner. When the real `agit-runner`
+# binary is fully implemented, the same agents work without changing this file.
+
+version: "1"
+
+project:
+  name: "agit"
+
+providers:
+  claude_code:
+    type: "local_command"
+    command: "claude"
+    mode: "workspace"
+
+agents:
+
+  # ─── test_writer ──────────────────────────────────────────────────────────
+  test_writer:
+    description: "Adds Rust tests (unit or integration) when an issue is labeled agit:test."
+    provider: "claude_code"
+    prompt: ".agit/prompts/test_writer.md"
+
+    trigger:
+      type: "github_issue_label"
+      label: "agit:test"
+
+    permissions:
+      read:
+        - "**"
+      write:
+        # Integration tests (preferred) live under crates/<crate>/tests/.
+        - "crates/*/tests/**"
+        # Inline unit tests inside #[cfg(test)] mod blocks live in src/.
+        - "crates/*/src/**/*.rs"
+        # Test-only deps may need to be added.
+        - "crates/*/Cargo.toml"
+      commands:
+        allow:
+          - "cargo test"
+          - "cargo check"
+          - "cargo fmt --check"
+
+    output:
+      type: "pull_request"
+      branch_prefix: "agit/test-writer/"
+      require_human_review: true
+
+    limits:
+      max_iterations: 5
+      max_files_changed: 10
+      max_cost_usd: 2.00
+
+  # ─── doc_updater ──────────────────────────────────────────────────────────
+  doc_updater:
+    description: "Updates Markdown documentation when an issue is labeled agit:doc."
+    provider: "claude_code"
+    prompt: ".agit/prompts/doc_updater.md"
+
+    trigger:
+      type: "github_issue_label"
+      label: "agit:doc"
+
+    permissions:
+      read:
+        - "**"
+      write:
+        - "**/*.md"
+        - "docs/**"
+      commands:
+        allow: []   # docs work needs no shell commands
+
+    output:
+      type: "pull_request"
+      branch_prefix: "agit/doc-updater/"
+      require_human_review: true
+
+    limits:
+      max_iterations: 4
+      max_files_changed: 8
+      max_cost_usd: 1.00
+
+  # ─── feature_engineer ─────────────────────────────────────────────────────
+  # Wider permissions — this is the agent meant to implement code features.
+  # Still locked out of secrets, the GHA workflow, and lockfiles.
+  feature_engineer:
+    description: "Implements small features in crates/ when an issue is labeled agit:feature."
+    provider: "claude_code"
+    prompt: ".agit/prompts/feature_engineer.md"
+
+    trigger:
+      type: "github_issue_label"
+      label: "agit:feature"
+
+    permissions:
+      read:
+        - "**"
+      write:
+        - "crates/**/src/**"
+        - "crates/**/tests/**"
+        - "crates/**/Cargo.toml"
+        - "Cargo.toml"
+      commands:
+        allow:
+          - "cargo build"
+          - "cargo test"
+          - "cargo check"
+          - "cargo fmt --check"
+          - "cargo clippy"
+
+    output:
+      type: "pull_request"
+      branch_prefix: "agit/feature/"
+      require_human_review: true
+
+    limits:
+      max_iterations: 10
+      max_files_changed: 20
+      max_cost_usd: 5.00

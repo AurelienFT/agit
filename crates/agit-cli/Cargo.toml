@@ -1,0 +1,18 @@
+[package]
+name = "agit-cli"
+description = "Command-line interface to Agit."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "agit"
+path = "src/main.rs"
+
+[dependencies]
+agit-core = { path = "../agit-core" }
+anyhow.workspace = true
+clap.workspace = true
+serde_yml.workspace = true

@@ -1,0 +1,10 @@
+{
+  "name": "demo-project",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Tiny TypeScript project used as the target of Agit demo runs.",
+  "scripts": {
+    "test": "echo 'tests would run here'",
+    "typecheck": "echo 'typecheck would run here'"
+  }
+}

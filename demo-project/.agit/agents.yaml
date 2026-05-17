@@ -1,0 +1,167 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# demo-project/.agit/agents.yaml
+#
+# This file is the heart of Agit: it declares every AI agent that is allowed
+# to act on this repository, which provider it talks to, what it can
+# read / write / run, when it activates, and what it must produce.
+#
+# Goal of this file: be a tour of the YAML schema. It is heavily commented
+# and kept intentionally simple. The full demo lives at the repo root in
+# ../.agit/agents.yaml — use that one for a realistic, minimal example.
+#
+# Self-hosted by design: providers below describe where AND how the runner
+# (which runs in YOUR infra) reaches a model. No model credential, no code,
+# and no prompt ever transit through Agit Cloud.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Schema version. Bump when the schema changes.
+version: "1"
+
+# Optional project block. Mostly useful for the dashboard's display name.
+project:
+  name: "demo-project"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Providers — how an agent reaches a model.
+# Each agent below references one of these by key (e.g. `provider: claude_code`).
+# The runner only enables a provider if it has the credentials/CLI it needs.
+# ─────────────────────────────────────────────────────────────────────────────
+providers:
+
+  # 1. Run an existing CLI on the runner host. The most flexible option:
+  #    anything the runner can `exec` can become a provider.
+  claude_code:
+    type: "local_command"
+    command: "claude"
+    # `mode` is a hint passed to the runner integration. Free-form for now.
+    mode: "workspace"
+
+  # 2. Official Anthropic API. The api_key_env names an environment variable
+  #    that the runner reads at execution time — the secret itself never
+  #    appears in this file and never leaves the runner host.
+  anthropic_cloud:
+    type: "anthropic_api"
+    api_key_env: "ANTHROPIC_API_KEY"
+    model: "claude-sonnet-4.5"
+
+  # 3. Any OpenAI-compatible endpoint. Works with Ollama, vLLM, LM Studio,
+  #    OpenRouter, internal proxies, etc. — without code changes here.
+  local_qwen:
+    type: "openai_compatible"
+    base_url: "http://localhost:11434/v1"
+    model: "qwen2.5-coder"
+    # Optional. Local Ollama doesn't need one; OpenRouter does.
+    # api_key_env: "OPENROUTER_API_KEY"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Agents — declared roles. Each one references a provider above.
+# ─────────────────────────────────────────────────────────────────────────────
+agents:
+
+  # ─── Agent #1 — test_writer ───────────────────────────────────────────────
+  # The reference example: writes tests for issues, never touches src/.
+  # Uses the local Claude Code CLI through `provider: claude_code`.
+  test_writer:
+    description: "Writes missing tests for issues labeled agent:test."
+    provider: "claude_code"
+    # Optional path to a Markdown system prompt, relative to repo root.
+    prompt: ".agit/prompts/test_writer.md"
+
+    # Trigger — the event that creates a Mission.
+    trigger:
+      type: "github_issue_label"
+      label: "agent:test"
+
+    # Policy: what the agent is allowed to touch.
+    # Globs use standard syntax: `**`, `*`, `?`, `{a,b}`.
+    permissions:
+      read:
+        - "src/**"
+        - "tests/**"
+        - "package.json"
+      write:
+        # Deny-by-default: anything NOT listed here is blocked at commit time.
+        - "tests/**"
+      commands:
+        # Same model for shell commands: only what's explicitly allowed runs.
+        allow:
+          - "pnpm test"
+          - "pnpm typecheck"
+
+    # Output: what a successful Run produces. `pull_request` is the default;
+    # the PR is reviewable, never auto-merged.
+    output:
+      type: "pull_request"
+      branch_prefix: "agit/test-writer/"
+      require_human_review: true
+
+    # Hard caps. The Run is aborted if any of these is exceeded.
+    limits:
+      max_iterations: 3
+      max_files_changed: 5
+      max_cost_usd: 1.00
+
+
+  # ─── Agent #2 — security_reviewer ─────────────────────────────────────────
+  # Read-only agent. Reviews PRs that touch sensitive paths and can BLOCK merge.
+  # Uses the official Anthropic API for stable, audited reviews.
+  security_reviewer:
+    description: "Blocks PRs that touch auth/payment code until a human signs off."
+    provider: "anthropic_cloud"
+
+    trigger:
+      type: "github_pull_request"
+      # Only fires when at least one of these glob patterns matches a changed file.
+      paths:
+        - "src/auth/**"
+        - "src/payments/**"
+
+    permissions:
+      # Read-only agent: can see everything, can write nothing, can run nothing.
+      read:
+        - "**"
+      write: []
+      commands:
+        allow: []
+
+    # `blocking_review` posts a review with status REQUEST_CHANGES. The PR
+    # cannot be merged until the agent's review is dismissed or addressed.
+    output:
+      type: "blocking_review"
+      require_human_review: true
+
+    limits:
+      max_iterations: 1
+      max_cost_usd: 0.50
+
+
+  # ─── Agent #3 — readme_polisher ───────────────────────────────────────────
+  # Documentation-only agent triggered manually from the dashboard or CLI.
+  # Uses a local Ollama model so light docs work doesn't burn API credit.
+  readme_polisher:
+    description: "Improves README clarity on request. Never modifies code."
+    provider: "local_qwen"
+
+    trigger:
+      # `manual` agents only run when explicitly invoked from CLI or dashboard.
+      type: "manual"
+
+    permissions:
+      read:
+        - "README.md"
+        - "docs/**"
+      write:
+        - "README.md"
+      commands:
+        allow: []
+
+    # `comment` produces no commit and no PR. The agent posts its suggestions
+    # as a comment on the triggering issue/run. Useful for advice-only agents.
+    output:
+      type: "comment"
+
+    limits:
+      max_iterations: 1
+      max_files_changed: 1

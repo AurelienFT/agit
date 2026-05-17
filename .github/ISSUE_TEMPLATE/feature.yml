@@ -1,0 +1,58 @@
+name: "Feature request (agit:feature)"
+description: Ask the feature_engineer agent to implement a small feature.
+title: "[feature] "
+labels: ["agit:feature"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Labeling this issue with **`agit:feature`** triggers the
+        `feature_engineer` agent defined in `.agit/agents.yaml`. The agent may
+        write under `crates/**/src`, `crates/**/tests`, and Cargo manifests,
+        and may run `cargo build/test/check/fmt --check/clippy`.
+
+        **Scope matters.** Agents do not do big refactors well. Keep each
+        issue to roughly one crate and one feature.
+
+  - type: dropdown
+    id: crate
+    attributes:
+      label: Primary crate
+      options:
+        - agit-core
+        - agit-cli
+        - agit-runner
+        - agit-server
+        - (multiple)
+    validations:
+      required: true
+
+  - type: textarea
+    id: feature
+    attributes:
+      label: What feature
+      description: Describe the feature. Include the public API shape if you have an opinion.
+      placeholder: |
+        Add `agit policy-check --agent <name> --diff <file>` to agit-cli. It
+        should read .agit/agents.yaml, find the agent, parse the diff, and
+        report any path that does not match a write glob.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: How will we know it's done?
+      placeholder: |
+        - `agit policy-check --agent test_writer --diff fixtures/diff-ok.txt` exits 0
+        - `agit policy-check --agent test_writer --diff fixtures/diff-bad.txt` exits non-zero
+        - At least one unit test covers each case
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Constraints / non-goals (optional)
+      description: Anything the agent should NOT touch.

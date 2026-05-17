@@ -1,0 +1,34 @@
+name: "Doc update (agit:doc)"
+description: Ask the doc_updater agent to update Markdown docs.
+title: "[docs] "
+labels: ["agit:doc"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Labeling this issue with **`agit:doc`** triggers the `doc_updater` agent
+        defined in `.agit/agents.yaml`. The agent may only write under
+        `**/*.md` and `docs/**`, and may not run shell commands.
+
+  - type: input
+    id: target
+    attributes:
+      label: Target file(s)
+      description: Which Markdown file(s) should be updated?
+      placeholder: e.g. README.md, docs/POC.md
+    validations:
+      required: true
+
+  - type: textarea
+    id: details
+    attributes:
+      label: What should change
+      description: Describe the doc update. Be specific — quote the section if possible.
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Source of truth (optional)
+      description: Link to the code or PR the doc should align with.

@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Discussion / question
+    url: https://github.com/aurelienfoucault/agit/discussions
+    about: For open-ended questions about Agit, please open a discussion instead.

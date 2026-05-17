@@ -1,0 +1,17 @@
+[package]
+name = "agit-server"
+description = "Agit control-plane server: dashboard, webhooks, mission orchestration."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "agit-server"
+path = "src/main.rs"
+
+[dependencies]
+agit-core = { path = "../agit-core" }
+anyhow.workspace = true
+clap.workspace = true

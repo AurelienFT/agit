@@ -1,0 +1,39 @@
+name: "Test request (agit:test)"
+description: Ask the test_writer agent to add tests.
+title: "[tests] "
+labels: ["agit:test"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Labeling this issue with **`agit:test`** triggers the `test_writer` agent
+        defined in `.agit/agents.yaml`. The agent may only write under
+        `crates/*/tests/**`, `crates/*/src/**/*.rs`, and `crates/*/Cargo.toml`,
+        and may only run `cargo test`, `cargo check`, `cargo fmt --check`.
+
+  - type: input
+    id: scope
+    attributes:
+      label: Scope
+      description: Which crate / module is the test about?
+      placeholder: e.g. agit-core::config or agit-cli list output
+    validations:
+      required: true
+
+  - type: textarea
+    id: details
+    attributes:
+      label: What should be tested
+      description: Describe the behavior you want covered. Cite functions, types, or output if relevant.
+      placeholder: |
+        Add a test confirming that AgitConfig::validate_references rejects an
+        agent referencing a missing provider key, with an error message
+        containing the missing key name.
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes for the agent (optional)
+      description: Anything the agent should know — edge cases, known traps, fixtures.

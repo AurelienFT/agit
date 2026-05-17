@@ -1,0 +1,13 @@
+[package]
+name = "agit-core"
+description = "Shared library for Agit: schema, policy, runner primitives."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_yml.workspace = true
