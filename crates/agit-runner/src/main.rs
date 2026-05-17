@@ -10,6 +10,7 @@
 //! to a server beyond status updates the operator chose to send back.
 
 mod history_api;
+mod provider;
 
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
