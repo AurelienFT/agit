@@ -9,6 +9,8 @@
 //! model credentials, or local CLIs. Neither code nor secrets are transmitted
 //! to a server beyond status updates the operator chose to send back.
 
+mod history_api;
+
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use std::collections::HashSet;
@@ -40,6 +42,26 @@ enum CliCommand {
         /// Don't actually run agents — just print what would be done.
         #[arg(long)]
         dry_run: bool,
+        /// Address (`host:port`) to expose the read-only history API on.
+        /// When unset, the API is not started.
+        #[arg(long)]
+        history_addr: Option<String>,
+        /// Path to a JSON file with history to seed the API on startup.
+        /// Optional — when unset (or missing), the API serves an empty store.
+        #[arg(long)]
+        history_file: Option<PathBuf>,
+    },
+    /// Serve the read-only history API only — no GitHub polling, no agent
+    /// execution. Useful for inspecting historic runs after the fact, or
+    /// during development.
+    ServeHistory {
+        /// Address (`host:port`) to listen on.
+        #[arg(long, default_value = "0.0.0.0:8787")]
+        addr: String,
+        /// Path to a JSON file with history to seed the store from.
+        /// Optional — when unset (or missing), starts empty.
+        #[arg(long)]
+        history_file: Option<PathBuf>,
     },
     /// Connect to an Agit server and consume missions (placeholder).
     Start {
@@ -63,7 +85,22 @@ fn main() -> Result<()> {
             directory,
             interval,
             dry_run,
-        } => watch(&directory, interval, dry_run),
+            history_addr,
+            history_file,
+        } => {
+            // Start the history API alongside the poll loop when an address
+            // is configured. The thread runs for the process lifetime — we
+            // deliberately don't join it; `watch` is a forever loop.
+            if let Some(addr) = history_addr.as_deref() {
+                let store = history_api::load_history(history_file.as_deref())?;
+                let _handle = history_api::spawn(store, addr)?;
+            }
+            watch(&directory, interval, dry_run)
+        }
+        CliCommand::ServeHistory { addr, history_file } => {
+            let store = history_api::load_history(history_file.as_deref())?;
+            history_api::serve(store, &addr)
+        }
         CliCommand::Start {
             server,
             token,
