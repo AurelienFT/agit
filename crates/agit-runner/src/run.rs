@@ -176,7 +176,10 @@ fn invoke_and_open_pr(
     Ok(())
 }
 
-fn run_allowed_commands(directory: &Path, commands: &[String]) -> Result<()> {
+/// Run each entry of `permissions.commands.allow` in `directory` and fail
+/// fast on the first non-zero exit. Reused by the retry orchestrator after
+/// the second-pass agent invocation.
+pub(crate) fn run_allowed_commands(directory: &Path, commands: &[String]) -> Result<()> {
     if commands.is_empty() {
         return Ok(());
     }

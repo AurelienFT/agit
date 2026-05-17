@@ -14,6 +14,7 @@ mod gh;
 mod git;
 mod history_api;
 mod provider;
+mod retry;
 mod review;
 mod run;
 
@@ -187,16 +188,6 @@ fn watch(directory: &Path, interval: u64, dry_run: bool) -> Result<()> {
     require_cli("gh")?;
     require_cli("git")?;
 
-    // Retry is not yet ported to Rust; its script is still required during
-    // the transition. It goes away in the commit that follows.
-    let retry_script = directory.join("scripts").join("agit-retry");
-    if !dry_run && !retry_script.exists() {
-        return Err(anyhow!(
-            "expected runner script at {} — make sure you're in the Agit repo root",
-            retry_script.display()
-        ));
-    }
-
     eprintln!(
         "agit-runner: watching {} every {}s{}",
         directory.display(),
@@ -227,7 +218,7 @@ fn watch(directory: &Path, interval: u64, dry_run: bool) -> Result<()> {
             Ok(n) => processed += n,
             Err(e) => eprintln!("agit-runner: review poll error: {e:#}"),
         }
-        match poll_pr_label(&directory, &retry_script, "agit:retry", "retry", dry_run) {
+        match poll_retries(&directory, &config, dry_run) {
             Ok(n) => processed += n,
             Err(e) => eprintln!("agit-runner: retry poll error: {e:#}"),
         }
@@ -336,42 +327,39 @@ fn poll_reviews(
     Ok(processed)
 }
 
-/// Poll open PRs carrying a given Agit label and dispatch to a script.
-/// No in-process cache: the script consumes (removes) the label on entry, so
-/// the next poll won't see it.
-fn poll_pr_label(
+/// Poll open PRs carrying `agit:retry` and run the original developer agent
+/// in-Rust. Same idempotency model as reviews: the orchestrator consumes the
+/// label up-front.
+fn poll_retries(
     directory: &Path,
-    script: &Path,
-    label: &str,
-    kind: &str,
+    config: &agit_core::config::AgitConfig,
     dry_run: bool,
 ) -> Result<usize> {
-    let prs = fetch_prs_with_label(directory, label)?;
+    let prs = fetch_prs_with_label(directory, "agit:retry")?;
     let mut processed = 0usize;
 
     for pr in prs {
         eprintln!(
-            "agit-runner: → PR #{} [{}] {} ({kind})",
-            pr.number, label, pr.title
+            "agit-runner: → PR #{} [agit:retry] {} (retry)",
+            pr.number, pr.title
         );
 
         if dry_run {
             eprintln!(
-                "agit-runner:   (dry-run) would run: {} {}",
-                script.display(),
+                "agit-runner:   (dry-run) would retry PR #{} via its original developer agent",
                 pr.number
             );
             processed += 1;
             continue;
         }
 
-        match run_script_with_number(directory, script, pr.number) {
+        match retry::handle_retry(directory, config, pr.number) {
             Ok(()) => {
                 eprintln!("agit-runner:   ✓ done");
                 processed += 1;
             }
             Err(e) => {
-                eprintln!("agit-runner:   ✗ run failed: {e:#}");
+                eprintln!("agit-runner:   ✗ retry failed: {e:#}");
             }
         }
     }
@@ -460,22 +448,6 @@ fn remote_branch_exists(directory: &Path, branch: &str) -> Result<bool> {
         .status()
         .context("running `git ls-remote`")?;
     Ok(status.success())
-}
-
-fn run_script_with_number(directory: &Path, script: &Path, number: u64) -> Result<()> {
-    let status = Command::new(script)
-        .current_dir(directory)
-        .arg(number.to_string())
-        .status()
-        .with_context(|| format!("executing {}", script.display()))?;
-    if !status.success() {
-        return Err(anyhow!(
-            "{} exited with status {}",
-            script.display(),
-            status.code().unwrap_or(-1)
-        ));
-    }
-    Ok(())
 }
 
 fn require_cli(name: &str) -> Result<()> {
