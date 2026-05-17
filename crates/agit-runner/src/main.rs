@@ -14,6 +14,7 @@ mod gh;
 mod git;
 mod history_api;
 mod provider;
+mod review;
 mod run;
 
 use anyhow::{anyhow, Context, Result};
@@ -186,19 +187,14 @@ fn watch(directory: &Path, interval: u64, dry_run: bool) -> Result<()> {
     require_cli("gh")?;
     require_cli("git")?;
 
-    // Review + retry are not yet ported to Rust; their scripts are still
-    // required during the transition. They go away in the commits that follow.
-    let review_script = directory.join("scripts").join("agit-review");
+    // Retry is not yet ported to Rust; its script is still required during
+    // the transition. It goes away in the commit that follows.
     let retry_script = directory.join("scripts").join("agit-retry");
-    if !dry_run {
-        for s in [&review_script, &retry_script] {
-            if !s.exists() {
-                return Err(anyhow!(
-                    "expected runner script at {} — make sure you're in the Agit repo root",
-                    s.display()
-                ));
-            }
-        }
+    if !dry_run && !retry_script.exists() {
+        return Err(anyhow!(
+            "expected runner script at {} — make sure you're in the Agit repo root",
+            retry_script.display()
+        ));
     }
 
     eprintln!(
@@ -227,7 +223,7 @@ fn watch(directory: &Path, interval: u64, dry_run: bool) -> Result<()> {
             Ok(n) => processed += n,
             Err(e) => eprintln!("agit-runner: issue poll error: {e:#}"),
         }
-        match poll_pr_label(&directory, &review_script, "agit:review", "review", dry_run) {
+        match poll_reviews(&directory, &config, dry_run) {
             Ok(n) => processed += n,
             Err(e) => eprintln!("agit-runner: review poll error: {e:#}"),
         }
@@ -293,6 +289,46 @@ fn poll_issues(
             }
             Err(e) => {
                 eprintln!("agit-runner:   ✗ run failed: {e:#}");
+            }
+        }
+    }
+
+    Ok(processed)
+}
+
+/// Poll open PRs carrying `agit:review` and run the reviewer in-Rust.
+/// No in-process cache: `review::handle_review` removes the label up-front,
+/// so the next poll won't see this PR.
+fn poll_reviews(
+    directory: &Path,
+    config: &agit_core::config::AgitConfig,
+    dry_run: bool,
+) -> Result<usize> {
+    let prs = fetch_prs_with_label(directory, "agit:review")?;
+    let mut processed = 0usize;
+
+    for pr in prs {
+        eprintln!(
+            "agit-runner: → PR #{} [agit:review] {} (review)",
+            pr.number, pr.title
+        );
+
+        if dry_run {
+            eprintln!(
+                "agit-runner:   (dry-run) would review PR #{} via reviewer agent",
+                pr.number
+            );
+            processed += 1;
+            continue;
+        }
+
+        match review::handle_review(directory, config, pr.number) {
+            Ok(()) => {
+                eprintln!("agit-runner:   ✓ done");
+                processed += 1;
+            }
+            Err(e) => {
+                eprintln!("agit-runner:   ✗ review failed: {e:#}");
             }
         }
     }
