@@ -5,4 +5,6 @@
 //! Keep it I/O-light and dependency-light so both surfaces stay cheap to build.
 
 pub mod config;
+pub mod logs;
+pub mod trace;
 pub mod usage;
