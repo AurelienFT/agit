@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+# scripts/agit-review — run the `reviewer` Agit agent on a pull request.
+#
+# Triggered by the watcher when a PR carries the `agit:review` label. The
+# label is consumed (removed) as the first action so the watcher doesn't
+# re-trigger us mid-flight.
+#
+# Verdict is decided by Claude via the trailing line of its output:
+#   AGIT_VERDICT: approve   → gh pr review --approve + gh pr merge --squash
+#   AGIT_VERDICT: changes   → gh pr review --request-changes + add agit:retry
+#
+# Trust model: same as scripts/agit-run. claude runs locally with the
+# operator's auth. No API key, no model credential leaves this host.
+
+set -euo pipefail
+
+# ─── argv / help ─────────────────────────────────────────────────────────────
+case "${1:-}" in
+  ""|--help|-h)
+    cat <<EOF
+Usage:
+  $(basename "$0") <pr-number>
+
+Runs the `reviewer` agent against the given PR. Requires the PR to carry the
+\`agit:review\` label (the watcher only triggers us when it does).
+EOF
+    exit 0
+    ;;
+esac
+
+PR=$1
+[[ "$PR" =~ ^[0-9]+$ ]] || { echo "ERR: PR number must be numeric (got: $PR)" >&2; exit 1; }
+
+# ─── pre-flight ──────────────────────────────────────────────────────────────
+need() { command -v "$1" >/dev/null 2>&1 || { echo "ERR: '$1' is required but not on PATH." >&2; exit 1; }; }
+need cargo
+need gh
+need jq
+need git
+need claude
+
+cargo build -q -p agit-cli
+./target/debug/agit show reviewer >/dev/null
+
+# ─── fetch PR state ──────────────────────────────────────────────────────────
+echo "→ Fetching PR #$PR..."
+PR_JSON=$(gh pr view "$PR" --json number,title,body,headRefName,baseRefName,labels,state,isDraft)
+
+STATE=$(jq -r '.state' <<<"$PR_JSON")
+IS_DRAFT=$(jq -r '.isDraft' <<<"$PR_JSON")
+HEAD=$(jq -r '.headRefName' <<<"$PR_JSON")
+BASE=$(jq -r '.baseRefName' <<<"$PR_JSON")
+PR_TITLE=$(jq -r '.title' <<<"$PR_JSON")
+PR_BODY=$(jq -r '.body' <<<"$PR_JSON")
+HAS_REVIEW=$(jq -r '.labels[]?.name | select(. == "agit:review")' <<<"$PR_JSON")
+
+if [ "$STATE" != "OPEN" ]; then
+  echo "PR #$PR is $STATE — nothing to review. Exiting cleanly."
+  exit 0
+fi
+if [ "$IS_DRAFT" = "true" ]; then
+  echo "PR #$PR is a draft — skipping."
+  exit 0
+fi
+if [ -z "$HAS_REVIEW" ]; then
+  echo "PR #$PR is missing the agit:review label — skipping."
+  exit 0
+fi
+
+# ─── consume the trigger label first (idempotency anchor) ────────────────────
+echo "→ Consuming agit:review label..."
+gh pr edit "$PR" --remove-label "agit:review"
+
+# ─── clone the PR branch into an isolated workspace ──────────────────────────
+REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
+WORKSPACE=$(mktemp -d -t agit-review.XXXXXX)
+PROMPT_FILE=$(mktemp -t agit-review-prompt.XXXXXX)
+CLAUDE_OUT=$(mktemp -t agit-review-out.XXXXXX)
+REVIEW_BODY=$(mktemp -t agit-review-body.XXXXXX)
+trap 'rm -rf "$WORKSPACE"; rm -f "$PROMPT_FILE" "$CLAUDE_OUT" "$REVIEW_BODY"' EXIT
+
+echo "→ Cloning $REPO @ $HEAD into $WORKSPACE..."
+gh repo clone "$REPO" "$WORKSPACE/repo" -- --depth=100 >/dev/null 2>&1
+cd "$WORKSPACE/repo"
+git fetch --quiet origin "$HEAD" "$BASE"
+git checkout --quiet "$HEAD"
+
+# ─── build the prompt ────────────────────────────────────────────────────────
+DIFF=$(git diff --stat "origin/$BASE...HEAD")
+FULL_DIFF=$(git diff "origin/$BASE...HEAD")
+
+{
+  cat .agit/prompts/reviewer.md
+  printf '\n---\n'
+  printf 'PR #%s: %s\n\n' "$PR" "$PR_TITLE"
+  printf 'PR body:\n%s\n\n' "$PR_BODY"
+  printf 'Diff stat:\n%s\n\n' "$DIFF"
+  printf 'Full diff:\n%s\n' "$FULL_DIFF"
+} > "$PROMPT_FILE"
+
+# ─── invoke claude ───────────────────────────────────────────────────────────
+echo "→ Invoking Claude Code as agent 'reviewer'..."
+claude --print \
+  --allowedTools 'Read,Bash(cargo test:*),Bash(cargo check:*),Bash(cargo clippy:*),Bash(cargo fmt:*)' \
+  < "$PROMPT_FILE" \
+  | tee "$CLAUDE_OUT"
+
+# ─── parse verdict (last AGIT_VERDICT: line wins) ────────────────────────────
+VERDICT_LINE=$(grep -E '^AGIT_VERDICT:' "$CLAUDE_OUT" | tail -1 || true)
+case "$VERDICT_LINE" in
+  *approve*) VERDICT="approve" ;;
+  *changes*) VERDICT="changes" ;;
+  *)
+    echo "ERR: reviewer output did not include an AGIT_VERDICT line." >&2
+    echo "ERR: leaving the PR untouched. Add 'agit:review' to retry." >&2
+    exit 1
+    ;;
+esac
+
+# Strip the verdict line from the body we post (keeps the comment clean).
+grep -v '^AGIT_VERDICT:' "$CLAUDE_OUT" > "$REVIEW_BODY"
+# Ensure we have at least some body.
+if [ ! -s "$REVIEW_BODY" ]; then
+  printf 'Automated review by the Agit reviewer agent (no detailed notes).\n' > "$REVIEW_BODY"
+fi
+
+# Go back to the watcher's directory before the temp workspace is cleaned up.
+cd - >/dev/null
+
+# ─── act on the verdict ──────────────────────────────────────────────────────
+case "$VERDICT" in
+  approve)
+    echo "→ Verdict: APPROVE. Posting review and merging."
+    gh pr review "$PR" --approve --body-file "$REVIEW_BODY"
+    if ! gh pr merge "$PR" --squash --delete-branch --auto 2>/dev/null; then
+      gh pr merge "$PR" --squash --delete-branch || {
+        echo "WARN: merge failed (branch protection? failing checks?). Leaving for human merge."
+        gh pr comment "$PR" --body "Agit reviewer approved this PR, but the auto-merge attempt failed. Please merge manually."
+      }
+    fi
+    ;;
+  changes)
+    echo "→ Verdict: REQUEST_CHANGES. Posting review and handing off to agit:retry."
+    gh pr review "$PR" --request-changes --body-file "$REVIEW_BODY"
+    gh pr edit "$PR" --add-label "agit:retry"
+    ;;
+esac
+
+echo "✓ reviewer done."

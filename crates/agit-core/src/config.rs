@@ -118,6 +118,11 @@ pub enum TriggerConfig {
     GithubIssueLabel {
         label: String,
     },
+    /// Fires when a label is added to a pull request. Used by reviewer-class
+    /// agents and any agent that re-acts on a PR (e.g. retry).
+    GithubPullRequestLabel {
+        label: String,
+    },
     GithubPullRequest {
         #[serde(default)]
         paths: Vec<String>,
@@ -132,6 +137,7 @@ impl TriggerConfig {
     pub fn kind_label(&self) -> &'static str {
         match self {
             TriggerConfig::GithubIssueLabel { .. } => "github_issue_label",
+            TriggerConfig::GithubPullRequestLabel { .. } => "github_pull_request_label",
             TriggerConfig::GithubPullRequest { .. } => "github_pull_request",
             TriggerConfig::GithubCommentCommand { .. } => "github_comment_command",
             TriggerConfig::Manual => "manual",
@@ -141,6 +147,7 @@ impl TriggerConfig {
     pub fn detail(&self) -> String {
         match self {
             TriggerConfig::GithubIssueLabel { label } => format!("label = {label}"),
+            TriggerConfig::GithubPullRequestLabel { label } => format!("pr label = {label}"),
             TriggerConfig::GithubPullRequest { paths } if paths.is_empty() => "paths = any".into(),
             TriggerConfig::GithubPullRequest { paths } => {
                 format!("paths = [{}]", paths.join(", "))

@@ -67,13 +67,38 @@ Code type: `AgentConfig`.
 
 The event that creates a Mission. Variants:
 
-- `github_issue_label` — label appears on an issue.
+- `github_issue_label` — label appears on an issue (drives the developer agents).
+- `github_pull_request_label` — label appears on a PR (drives the reviewer agent and the retry loop).
 - `github_pull_request` — PR opened/updated; optionally scoped by `paths:`.
 - `github_comment_command` — `/agit run <agent>` in a comment.
 - `manual` — kicked off from the dashboard or CLI.
 - *(future)* `schedule` — cron-style recurring runs.
 
 Code type: `TriggerConfig`.
+
+### The review loop
+
+Reviewer-class agents trigger on `github_pull_request_label` and drive a feedback cycle:
+
+```
+issue agit:test/doc/feature
+  → developer agent → opens PR + adds agit:review
+                         (unless issue carries agit:human-review)
+
+PR agit:review
+  → reviewer agent
+    ├─ approve → gh pr review --approve + gh pr merge
+    └─ changes → gh pr review --request-changes + adds agit:retry
+
+PR agit:retry
+  → original developer (resolved from branch name)
+  → re-runs with issue + PR + reviewer feedback in the prompt
+  → pushes follow-up, re-adds agit:review
+
+Loop until the reviewer approves.
+```
+
+Each transition consumes its trigger label as the first action, so the cycle is self-clocked by GitHub state, not by an external scheduler.
 
 ## Mission
 

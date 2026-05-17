@@ -1,13 +1,22 @@
 # Agit running on Agit itself.
 #
-# Three agents wired up to develop this repo via GitHub issues:
-#   - test_writer       (label: agit:test)    — adds Rust integration tests
-#   - doc_updater       (label: agit:doc)     — updates Markdown documentation
-#   - feature_engineer  (label: agit:feature) — implements small features in crates/
+# Four agents — three developers and one reviewer — drive the dev workflow:
 #
-# These agents are executed by .github/workflows/agit-runner.yml, which is the
-# "GitHub Actions deployment shape" of agit-runner. When the real `agit-runner`
-# binary is fully implemented, the same agents work without changing this file.
+#   issue agit:test     → test_writer       opens PR
+#   issue agit:doc      → doc_updater       opens PR
+#   issue agit:feature  → feature_engineer  opens PR
+#                           │ (auto-adds PR label agit:review,
+#                           │  unless the issue carries agit:human-review)
+#                           ▼
+#                         PR agit:review → reviewer
+#                           ├─ approve → gh pr review --approve + gh pr merge
+#                           └─ changes → gh pr review --request-changes
+#                                         + adds PR label agit:retry
+#                           ▼
+#                         PR agit:retry → original developer (resolved via
+#                                         branch name agit/<slug>/issue-N).
+#                                         Pushes fixes, re-adds agit:review.
+#                                         Loops until reviewer approves.
 
 version: "1"
 
@@ -124,3 +133,45 @@ agents:
       max_iterations: 10
       max_files_changed: 20
       max_cost_usd: 5.00
+
+  # ─── reviewer ─────────────────────────────────────────────────────────────
+  # Triggered when a PR carries the agit:review label. The label is added
+  # automatically by the developer agents after they open their PR, unless
+  # the parent issue carries agit:human-review (which opts out of agentic
+  # review entirely).
+  #
+  # The reviewer never modifies code. It reads, runs the toolchain checks,
+  # and either approves+merges or requests changes (which adds agit:retry
+  # to the PR, looping back to the original developer).
+  reviewer:
+    description: "Reviews PRs opened by other Agit agents and either approves+merges or requests changes."
+    provider: "claude_code"
+    prompt: ".agit/prompts/reviewer.md"
+
+    trigger:
+      type: "github_pull_request_label"
+      label: "agit:review"
+
+    permissions:
+      read:
+        - "**"
+      write: []
+      commands:
+        allow:
+          - "cargo test"
+          - "cargo check"
+          - "cargo clippy"
+          - "cargo fmt --check"
+
+    # The reviewer's verdict drives a `gh pr review` + (on approve) `gh pr merge`,
+    # or (on changes) a `agit:retry` label add. The `blocking_review` output kind
+    # captures the "this is a review, not new code" semantics; the script does
+    # the dispatch.
+    output:
+      type: "blocking_review"
+      require_human_review: false
+
+    limits:
+      max_iterations: 5
+      max_files_changed: 0
+      max_cost_usd: 2.00

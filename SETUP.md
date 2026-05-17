@@ -38,10 +38,22 @@ Both keep their credentials on your machine.
 
 ## 3. Create the labels (one-time, on the GitHub repo)
 
+Six labels: three for picking the developer agent on issues, three for the reviewer loop on PRs.
+
 ```bash
-gh label create "agit:test"    --color FBCA04 --description "Triggers test_writer (Rust tests)"
-gh label create "agit:doc"     --color 0E8A16 --description "Triggers doc_updater (Markdown docs)"
-gh label create "agit:feature" --color 1D76DB --description "Triggers feature_engineer (small features in crates/)"
+# Issue labels — pick which developer agent runs.
+gh label create "agit:test"          --color FBCA04 --description "Triggers test_writer (Rust tests)"
+gh label create "agit:doc"           --color 0E8A16 --description "Triggers doc_updater (Markdown docs)"
+gh label create "agit:feature"       --color 1D76DB --description "Triggers feature_engineer (small features in crates/)"
+
+# Issue opt-out — keep the reviewer agent off this PR (human review only).
+gh label create "agit:human-review"  --color D93F0B --description "On an issue: developer agent will NOT add agit:review to the PR — human review only"
+
+# PR labels — drive the reviewer loop. The agents add these themselves;
+# the only one you'd add by hand is agit:review on an existing PR to ask
+# the reviewer to look at it.
+gh label create "agit:review"        --color 5319E7 --description "On a PR: triggers the reviewer agent"
+gh label create "agit:retry"         --color C5DEF5 --description "On a PR: reviewer asked for changes; re-runs the original dev agent"
 ```
 
 ## 4. Launch the daemon
@@ -56,22 +68,53 @@ Leave it running. On the first start it:
 - Confirms `gh` and `git` are on PATH.
 - Looks for `scripts/agit-run` next to it.
 
-Then it polls GitHub every 30 seconds for open issues labeled with one of:
+Then every 30 seconds it polls GitHub for:
 
-- `agit:test` → runs the `test_writer` agent
-- `agit:doc` → runs the `doc_updater` agent
-- `agit:feature` → runs the `feature_engineer` agent
+- **Open issues** labeled `agit:test`, `agit:doc`, or `agit:feature` → runs the matching developer agent via `scripts/agit-run`.
+- **Open PRs** labeled `agit:review` → runs the `reviewer` agent via `scripts/agit-review`.
+- **Open PRs** labeled `agit:retry` → re-runs the original developer agent (resolved from the branch name) via `scripts/agit-retry`.
 
-For each new labeled issue, the daemon calls `scripts/agit-run <issue#>` which:
+### Developer flow (issue → PR)
+
+For each new labeled issue, `scripts/agit-run`:
 
 1. Creates branch `agit/<agent>/issue-<n>` on top of the default branch.
-2. Builds the prompt from `.agit/prompts/<agent>.md` + the issue title and body.
+2. Builds the prompt from `.agit/prompts/<agent>.md` + issue title/body.
 3. Invokes `claude --print --allowedTools <…>` headlessly. Your local Claude Code auth is used.
 4. Runs the post-flight policy check (write globs + deny-by-default lockfiles / `.env*` / `.git/**`).
 5. Runs the agent's allowed commands (`cargo test`, etc.).
-6. Pushes the branch and opens a PR via `gh`.
+6. Pushes the branch and opens a PR.
+7. **Adds `agit:review` to the PR** so the reviewer agent picks it up automatically. The single exception: if the issue carries `agit:human-review`, the developer skips this step and the PR waits for a human reviewer.
 
-Idempotency: the daemon checks whether `agit/<agent>/issue-<n>` already exists on `origin` and skips issues that have already been handled. Re-labeling an issue does not re-trigger the run; delete the branch to force a re-run.
+### Reviewer flow (PR → merge or retry)
+
+When a PR is labeled `agit:review`, `scripts/agit-review`:
+
+1. Removes the `agit:review` label (idempotency anchor — the label IS the trigger; consuming it prevents a re-trigger mid-run).
+2. Clones the PR branch in a temp workspace.
+3. Invokes `claude` with read-only tools + `cargo test/check/clippy/fmt --check`.
+4. Parses Claude's verdict from the last `AGIT_VERDICT: approve|changes` line of its output.
+5. **On approve**: `gh pr review --approve` + `gh pr merge --squash --delete-branch`.
+6. **On changes**: `gh pr review --request-changes` + adds `agit:retry` to the PR.
+
+### Retry flow (PR → fixes → review again)
+
+When a PR is labeled `agit:retry`, `scripts/agit-retry`:
+
+1. Removes the `agit:retry` label.
+2. Resolves the original developer agent from the branch name (`agit/<slug>/issue-N`).
+3. Clones the PR branch.
+4. Builds a richer prompt: agent's system prompt + original issue + PR title/body + the reviewer's latest CHANGES_REQUESTED feedback.
+5. Same policy check, same allowed commands.
+6. Pushes a follow-up commit to the existing branch.
+7. **Re-adds `agit:review`** so the reviewer evaluates the new state.
+
+The reviewer ↔ retry cycle can repeat indefinitely until the reviewer approves.
+
+### Idempotency
+
+- **Issue → developer** is anchored by the remote branch existing. If `agit/<slug>/issue-N` is on `origin`, the daemon skips. Delete that branch (or the local in-process cache, by restarting the daemon) to force a re-run.
+- **PR → reviewer / retry** is anchored by **label consumption**. The script removes the label as its first action. If the script crashes before that, the daemon retries automatically on the next tick.
 
 ### Useful flags
 
@@ -89,8 +132,14 @@ cargo run --release -p agit-runner -- watch -C /path/to/clone    # watch a diffe
    agit-runner: → issue #1 [agit:feature] add foo
    agit-runner:   ✓ done
    ```
-3. A PR shows up on GitHub.
-4. Review the PR like any other.
+3. A PR shows up on GitHub, already labeled `agit:review`. On the next tick the daemon hands it to the reviewer:
+   ```
+   agit-runner: → PR #2 [agit:review] agit(feature_engineer): work on #1 (review)
+   agit-runner:   ✓ done
+   ```
+4. If the reviewer approves, the PR is merged automatically and the branch deleted. If it requests changes, the PR gets `agit:retry`; the next tick re-runs the developer with the review feedback in the prompt, pushes a follow-up, re-adds `agit:review`. Loop continues until merged.
+
+**To opt out of the review loop**: add `agit:human-review` to the issue (the dev agent will then skip the `agit:review` label on its PR, leaving it for you).
 
 ## 6. What's wired up vs. what's still stubs
 

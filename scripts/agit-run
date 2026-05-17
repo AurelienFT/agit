@@ -68,7 +68,11 @@ echo "→ Fetching issue #$ISSUE..."
 ISSUE_JSON=$(gh issue view "$ISSUE" --json number,title,body,labels)
 ISSUE_TITLE=$(jq -r '.title' <<<"$ISSUE_JSON")
 ISSUE_BODY=$(jq -r '.body'  <<<"$ISSUE_JSON")
-LABEL=$(jq -r '.labels[].name | select(startswith("agit:"))' <<<"$ISSUE_JSON" | head -1)
+# All agit:* labels on the issue. The first non-human-review one drives the agent
+# pick. agit:human-review opts out of the automated reviewer loop.
+ISSUE_LABELS=$(jq -r '.labels[]?.name | select(startswith("agit:"))' <<<"$ISSUE_JSON")
+LABEL=$(echo "$ISSUE_LABELS" | grep -v '^agit:human-review$' | head -1 || true)
+HUMAN_REVIEW=$(echo "$ISSUE_LABELS" | grep -x 'agit:human-review' || true)
 
 if [ -z "$LABEL" ]; then
   echo "ERR: issue #$ISSUE has no agit:* label." >&2
@@ -223,7 +227,18 @@ gh pr create \
   --base  "$DEFAULT_BRANCH" \
   --head  "$BRANCH"
 
-gh issue comment "$ISSUE" --body "Agit run completed locally for agent \`$AGENT\`. A PR has been opened (see this repo)."
+# Resolve the PR number we just created (the latest one for this head branch).
+PR_NUM=$(gh pr view "$BRANCH" --json number --jq '.number')
+
+# Trigger the reviewer loop, unless the issue opted out with agit:human-review.
+if [ -n "$HUMAN_REVIEW" ]; then
+  echo "→ Issue carries agit:human-review — leaving PR for human review."
+  gh issue comment "$ISSUE" --body "Agit ran agent \`$AGENT\`. PR #$PR_NUM opened. The issue carried \`agit:human-review\`, so the reviewer agent will NOT touch this PR — please review it yourself."
+else
+  echo "→ Adding agit:review label to PR #$PR_NUM (triggers the reviewer agent)."
+  gh pr edit "$PR_NUM" --add-label "agit:review"
+  gh issue comment "$ISSUE" --body "Agit ran agent \`$AGENT\`. PR #$PR_NUM opened and handed off to the \`reviewer\` agent (label \`agit:review\`)."
+fi
 
 echo
 echo "✓ Done."

@@ -136,7 +136,7 @@ fn watch(directory: &Path, interval: u64, dry_run: bool) -> Result<()> {
         .canonicalize()
         .with_context(|| format!("could not resolve {}", directory.display()))?;
 
-    // Pre-flight: the config must be valid, gh must be available, scripts/agit-run must exist.
+    // Pre-flight: the config must be valid, gh must be available, all three scripts must exist.
     let config_path = directory.join(".agit").join("agents.yaml");
     agit_core::config::AgitConfig::load(&config_path)
         .with_context(|| format!("invalid Agit config at {}", config_path.display()))?;
@@ -144,12 +144,18 @@ fn watch(directory: &Path, interval: u64, dry_run: bool) -> Result<()> {
     require_cli("gh")?;
     require_cli("git")?;
 
-    let script = directory.join("scripts").join("agit-run");
-    if !dry_run && !script.exists() {
-        return Err(anyhow!(
-            "expected runner script at {} — make sure you're in the Agit repo root",
-            script.display()
-        ));
+    let run_script = directory.join("scripts").join("agit-run");
+    let review_script = directory.join("scripts").join("agit-review");
+    let retry_script = directory.join("scripts").join("agit-retry");
+    if !dry_run {
+        for s in [&run_script, &review_script, &retry_script] {
+            if !s.exists() {
+                return Err(anyhow!(
+                    "expected runner script at {} — make sure you're in the Agit repo root",
+                    s.display()
+                ));
+            }
+        }
     }
 
     eprintln!(
@@ -159,39 +165,44 @@ fn watch(directory: &Path, interval: u64, dry_run: bool) -> Result<()> {
         if dry_run { " (dry-run)" } else { "" }
     );
     eprintln!(
-        "agit-runner: reacting to labels: {}",
+        "agit-runner: issue labels: {}  |  PR labels: agit:review, agit:retry",
         LABEL_TO_SLUG
             .iter()
             .map(|(l, _)| *l)
             .collect::<Vec<_>>()
-            .join(", ")
+            .join(", "),
     );
     eprintln!("agit-runner: Ctrl-C to stop.");
 
-    // In-process cache to avoid re-checking the same issue every poll.
-    let mut seen: HashSet<u64> = HashSet::new();
+    // In-process cache for issue runs (branch existence is the durable anchor).
+    // PR runs don't need it: the label is consumed by the script on entry.
+    let mut seen_issues: HashSet<u64> = HashSet::new();
 
     loop {
-        match poll_once(&directory, &script, dry_run, &mut seen) {
-            Ok(processed) => {
-                if processed == 0 {
-                    eprintln!("agit-runner: idle. sleeping {interval}s…");
-                } else {
-                    eprintln!(
-                        "agit-runner: handled {} issue(s) this tick. sleeping {interval}s…",
-                        processed
-                    );
-                }
-            }
-            Err(e) => {
-                eprintln!("agit-runner: poll error: {e:#}");
-            }
+        let mut processed = 0usize;
+        match poll_issues(&directory, &run_script, dry_run, &mut seen_issues) {
+            Ok(n) => processed += n,
+            Err(e) => eprintln!("agit-runner: issue poll error: {e:#}"),
+        }
+        match poll_pr_label(&directory, &review_script, "agit:review", "review", dry_run) {
+            Ok(n) => processed += n,
+            Err(e) => eprintln!("agit-runner: review poll error: {e:#}"),
+        }
+        match poll_pr_label(&directory, &retry_script, "agit:retry", "retry", dry_run) {
+            Ok(n) => processed += n,
+            Err(e) => eprintln!("agit-runner: retry poll error: {e:#}"),
+        }
+
+        if processed == 0 {
+            eprintln!("agit-runner: idle. sleeping {interval}s…");
+        } else {
+            eprintln!("agit-runner: handled {processed} item(s) this tick. sleeping {interval}s…");
         }
         std::thread::sleep(std::time::Duration::from_secs(interval));
     }
 }
 
-fn poll_once(
+fn poll_issues(
     directory: &Path,
     script: &Path,
     dry_run: bool,
@@ -207,13 +218,11 @@ fn poll_once(
 
         let branch = format!("agit/{slug}/issue-{}", issue.number);
 
-        // If we already saw this issue in this process, skip the heavier remote check.
         if seen.contains(&issue.number) {
             continue;
         }
 
         if remote_branch_exists(directory, &branch)? {
-            // Already handled in a previous tick (or by someone else); remember it.
             seen.insert(issue.number);
             continue;
         }
@@ -234,7 +243,7 @@ fn poll_once(
             continue;
         }
 
-        match run_agent(directory, script, issue.number) {
+        match run_script_with_number(directory, script, issue.number) {
             Ok(()) => {
                 eprintln!("agit-runner:   ✓ done");
                 seen.insert(issue.number);
@@ -242,8 +251,49 @@ fn poll_once(
             }
             Err(e) => {
                 eprintln!("agit-runner:   ✗ run failed: {e:#}");
-                // Don't add to `seen` — we'll retry next tick. The branch
-                // existence check is the durable idempotency anchor.
+            }
+        }
+    }
+
+    Ok(processed)
+}
+
+/// Poll open PRs carrying a given Agit label and dispatch to a script.
+/// No in-process cache: the script consumes (removes) the label on entry, so
+/// the next poll won't see it.
+fn poll_pr_label(
+    directory: &Path,
+    script: &Path,
+    label: &str,
+    kind: &str,
+    dry_run: bool,
+) -> Result<usize> {
+    let prs = fetch_prs_with_label(directory, label)?;
+    let mut processed = 0usize;
+
+    for pr in prs {
+        eprintln!(
+            "agit-runner: → PR #{} [{}] {} ({kind})",
+            pr.number, label, pr.title
+        );
+
+        if dry_run {
+            eprintln!(
+                "agit-runner:   (dry-run) would run: {} {}",
+                script.display(),
+                pr.number
+            );
+            processed += 1;
+            continue;
+        }
+
+        match run_script_with_number(directory, script, pr.number) {
+            Ok(()) => {
+                eprintln!("agit-runner:   ✓ done");
+                processed += 1;
+            }
+            Err(e) => {
+                eprintln!("agit-runner:   ✗ run failed: {e:#}");
             }
         }
     }
@@ -281,6 +331,37 @@ fn fetch_labeled_issues(directory: &Path) -> Result<Vec<GhIssue>> {
     Ok(issues)
 }
 
+/// Fetch open PRs carrying a specific label. Single label here is safe to use
+/// directly — `gh pr list --label X` doesn't have the OR/AND ambiguity since
+/// we're filtering on exactly one label.
+fn fetch_prs_with_label(directory: &Path, label: &str) -> Result<Vec<GhIssue>> {
+    let out = Command::new("gh")
+        .current_dir(directory)
+        .args([
+            "pr",
+            "list",
+            "--state",
+            "open",
+            "--limit",
+            "200",
+            "--label",
+            label,
+            "--json",
+            "number,title,labels",
+        ])
+        .output()
+        .context("running `gh pr list`")?;
+    if !out.status.success() {
+        return Err(anyhow!(
+            "gh pr list failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let prs: Vec<GhIssue> =
+        serde_json::from_slice(&out.stdout).context("parsing gh JSON output")?;
+    Ok(prs)
+}
+
 fn pick_agit_label(issue: &GhIssue) -> Option<(&'static str, &'static str)> {
     for label in &issue.labels {
         for (l, slug) in LABEL_TO_SLUG {
@@ -303,10 +384,10 @@ fn remote_branch_exists(directory: &Path, branch: &str) -> Result<bool> {
     Ok(status.success())
 }
 
-fn run_agent(directory: &Path, script: &Path, issue: u64) -> Result<()> {
+fn run_script_with_number(directory: &Path, script: &Path, number: u64) -> Result<()> {
     let status = Command::new(script)
         .current_dir(directory)
-        .arg(issue.to_string())
+        .arg(number.to_string())
         .status()
         .with_context(|| format!("executing {}", script.display()))?;
     if !status.success() {

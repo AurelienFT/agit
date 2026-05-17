@@ -145,12 +145,18 @@ Run them with `cargo run -p <package> -- <args>` (e.g. `cargo run -p agit-cli --
 **Currently implemented**:
 
 - `agit list` / `agit providers` / `agit show <name>` / `agit validate` — read the YAML, validate the schema, cross-validate `agent.provider` references.
-- `agit-runner watch` — **real polling daemon**. Watches the GitHub repo (via `gh` CLI) for issues labeled `agit:test`, `agit:doc`, `agit:feature`. For each new one (idempotency via `agit/<agent>/issue-<n>` branch existence), it shells out to `scripts/agit-run <N>`, which builds the prompt, invokes the local `claude` CLI headlessly, runs the policy check, and opens a PR. This is the "no server" deployment shape — covers the full Agit loop on the user's machine without any HTTP component.
+- `agit-runner watch` — **real polling daemon**. Polls the GitHub repo (via `gh`) for three things:
+  1. Open **issues** labeled `agit:test` / `agit:doc` / `agit:feature` → `scripts/agit-run` runs the developer agent. Idempotency: skip if `agit/<slug>/issue-N` branch exists on `origin`.
+  2. Open **PRs** labeled `agit:review` → `scripts/agit-review` runs the reviewer. Idempotency: label consumption (the script removes the label as its first action).
+  3. Open **PRs** labeled `agit:retry` → `scripts/agit-retry` re-runs the original developer with reviewer feedback in the prompt; pushes a follow-up; re-adds `agit:review`. Same label-consumption idempotency.
+- `scripts/agit-run` adds `agit:review` to its PR automatically, UNLESS the parent issue carries `agit:human-review` (opt-out marker — keeps the PR for a human).
+- `scripts/agit-review` parses Claude's verdict from the last `AGIT_VERDICT: approve|changes` line of its output. On approve it `gh pr review --approve` + `gh pr merge --squash --delete-branch`. On changes it `gh pr review --request-changes` + adds `agit:retry`.
+- The dev ↔ reviewer ↔ retry loop continues until the reviewer approves.
 - `agit-runner check` — diagnostic (placeholder for real PATH/env probing).
 - `agit-runner start --server <url>` — stub for the mission-API mode (paired with a future `agit-server`).
 - `agit-server serve` — scaffold; HTTP and webhooks not implemented yet.
 
-**Not implemented yet**: HTTP listener and webhook receiver in `agit-server`; real `agit-core::policy` (the script's Python policy check stands in for now). Scope ahead in [docs/POC.md](docs/POC.md).
+**Not implemented yet**: HTTP listener and webhook receiver in `agit-server`; real `agit-core::policy` (the scripts' Python policy check stands in for now). Scope ahead in [docs/POC.md](docs/POC.md).
 
 ## Target stack
 

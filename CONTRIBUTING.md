@@ -45,31 +45,53 @@ See `CLAUDE.md` for the longer "what to do / what to avoid" reference.
 
 ## Working with an Agit agent
 
-A local daemon (`agit-runner watch`) does everything; you only label issues on GitHub.
+A single local daemon (`agit-runner watch`) drives the whole loop; you only label things on GitHub.
 
-1. You open an issue with one of the `agit:*` labels.
-2. The daemon (running on your machine) polls open issues every 30s. When it spots one with an `agit:*` label and no matching branch yet, it acts.
-3. The daemon delegates to `scripts/agit-run <issue#>`, which:
-   - Resolves the matching agent from `.agit/agents.yaml`.
-   - Creates `agit/<agent>/issue-<n>` off the default branch.
-   - Builds the prompt from the agent's `.agit/prompts/<agent>.md` + the issue title and body.
-   - Invokes `claude --print --allowedTools <…>` headlessly. **Authentication is whatever your local `claude` has** (Pro/Max OAuth, Bedrock, Vertex, etc.) — same as any interactive session.
-   - Runs the post-flight policy check on the diff. A change to a path outside the agent's `permissions.write` is blocked here, not at review time.
-   - Runs the agent's allowed commands (`cargo test`, etc.).
-   - Pushes the branch and opens a PR via `gh`.
-4. You review the PR like any other.
+```
+issue agit:test/doc/feature  ──▶  dev agent (scripts/agit-run)
+                                     │ creates branch + opens PR
+                                     │ adds  agit:review  to the PR
+                                     │ (unless issue has agit:human-review)
+                                     ▼
+                            PR agit:review  ──▶  reviewer (scripts/agit-review)
+                                     │
+                          ┌──────────┴──────────┐
+                          │                     │
+                       approve               changes
+                          │                     │
+                  gh pr review --approve   gh pr review --request-changes
+                  gh pr merge --squash     + adds  agit:retry  to the PR
+                          │                     │
+                        merged                  ▼
+                                       PR agit:retry  ──▶  original dev (scripts/agit-retry)
+                                                              │ pushes follow-up
+                                                              │ re-adds agit:review
+                                                              └─────────── loops
+```
 
-No Anthropic API key in GitHub. No GitHub webhook. No public URL to expose. Just one process you run on your machine — see [SETUP.md](SETUP.md).
+All agents share the same trust model: `claude` runs on your machine under your own auth (no API key, no GitHub secret, no public URL). The watcher consumes the `agit:review` / `agit:retry` label as its first action so a mid-run crash auto-retries without double-firing.
+
+To **opt out of the agentic review** on a given issue, add the `agit:human-review` label to it before triggering. The developer agent will then open the PR but not add `agit:review` — a human reviewer is expected to take over.
 
 When the full `agit-server` is implemented, `agit-runner watch` keeps working for users who don't want a managed dashboard; `agit-runner start` becomes the path for orgs that do.
 
 ### Picking the right label
+
+Issue-level labels:
 
 | Label | Agent | Can write | Can run |
 |---|---|---|---|
 | `agit:test` | `test_writer` | `crates/*/tests/**`, `crates/*/src/**/*.rs`, `crates/*/Cargo.toml` | `cargo test`, `cargo check`, `cargo fmt --check` |
 | `agit:doc` | `doc_updater` | `**/*.md`, `docs/**` | _none_ |
 | `agit:feature` | `feature_engineer` | `crates/**/src/**`, `crates/**/tests/**`, `crates/**/Cargo.toml`, `Cargo.toml` | `cargo build`, `cargo test`, `cargo check`, `cargo fmt --check`, `cargo clippy` |
+| `agit:human-review` | — | (opt-out marker; suppresses `agit:review` on the resulting PR) | — |
+
+PR-level labels (you rarely add these by hand — the agents do):
+
+| Label | Agent | Action |
+|---|---|---|
+| `agit:review` | `reviewer` | Reads PR diff, runs cargo checks, posts approve or request_changes, may merge. |
+| `agit:retry` | _original developer_ | Pulls the latest reviewer feedback + original issue, pushes a follow-up commit on the same branch, hands back to `agit:review`. |
 
 Cross-cutting things `.github/**`, `.agit/**`, `*.yaml`, lockfiles, `.env*` are **never** writable by an agent. Use the classic PR route for those.
 

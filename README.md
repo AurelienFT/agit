@@ -119,11 +119,16 @@ Details: [docs/BUSINESS_MODEL.md](docs/BUSINESS_MODEL.md).
 
 This repo is set up to develop itself via Agit. The loop is: open an issue with a label, a PR comes back.
 
-| Label | Agent | What it does |
-|---|---|---|
-| `agit:test` | `test_writer` | Adds Rust tests under `crates/*/tests/**` (or `#[cfg(test)]` inline). |
-| `agit:doc` | `doc_updater` | Updates Markdown documentation. |
-| `agit:feature` | `feature_engineer` | Implements small features in `crates/**/src`. |
+| Where | Label | Agent | What it does |
+|---|---|---|---|
+| Issue | `agit:test` | `test_writer` | Adds Rust tests under `crates/*/tests/**` (or `#[cfg(test)]` inline). |
+| Issue | `agit:doc` | `doc_updater` | Updates Markdown documentation. |
+| Issue | `agit:feature` | `feature_engineer` | Implements small features in `crates/**/src`. |
+| Issue | `agit:human-review` | — | Opt-out marker: the dev agent will NOT add `agit:review` to its PR, leaving it for a human reviewer. |
+| PR | `agit:review` | `reviewer` | Reviews the PR. Approves+merges or requests changes + adds `agit:retry`. |
+| PR | `agit:retry` | _original dev agent_ | Resolved from branch name. Re-runs with the issue + PR + reviewer feedback, pushes a follow-up, re-adds `agit:review`. |
+
+The dev → reviewer → retry → reviewer loop continues until the reviewer approves and merges. See [docs/POC.md](docs/POC.md) for the full state diagram.
 
 There is **one process to launch**, on your machine, after a one-time setup:
 

@@ -1,11 +1,19 @@
-# Labels that .github/workflows/agit-runner.yml reacts to.
+# Labels that .github/workflows/ci.yml and agit-runner react to.
 # Apply once after creating the repo:
 #
-#   gh label create "agit:test"    --color FBCA04 --description "Triggers test_writer (Rust tests)"
-#   gh label create "agit:doc"     --color 0E8A16 --description "Triggers doc_updater (Markdown docs)"
-#   gh label create "agit:feature" --color 1D76DB --description "Triggers feature_engineer (small features in crates/)"
+#   # Issue labels — pick which developer agent runs.
+#   gh label create "agit:test"          --color FBCA04 --description "Triggers test_writer (Rust tests)"
+#   gh label create "agit:doc"           --color 0E8A16 --description "Triggers doc_updater (Markdown docs)"
+#   gh label create "agit:feature"       --color 1D76DB --description "Triggers feature_engineer (small features in crates/)"
 #
-# Or, with one of the community label-sync actions, point it at this file.
+#   # Opt-out: keep the agent loop off this issue, human review only.
+#   gh label create "agit:human-review"  --color D93F0B --description "On an issue: developer agent will NOT add agit:review to the PR — human review only"
+#
+#   # PR labels — drive the reviewer loop. Added by the agents themselves;
+#   # you rarely add them by hand (except agit:review on an existing PR to
+#   # ask the reviewer to look at it).
+#   gh label create "agit:review"        --color 5319E7 --description "On a PR: triggers the reviewer agent"
+#   gh label create "agit:retry"         --color C5DEF5 --description "On a PR: reviewer asked for changes; re-runs the original dev agent"
 
 - name: "agit:test"
   color: "FBCA04"
@@ -18,3 +26,15 @@
 - name: "agit:feature"
   color: "1D76DB"
   description: "Triggers the feature_engineer Agit agent (small features in crates/)."
+
+- name: "agit:human-review"
+  color: "D93F0B"
+  description: "On an issue: developer agent will NOT add agit:review to the PR — human review only."
+
+- name: "agit:review"
+  color: "5319E7"
+  description: "On a PR: triggers the reviewer Agit agent."
+
+- name: "agit:retry"
+  color: "C5DEF5"
+  description: "On a PR: reviewer requested changes — re-runs the original dev agent."
