@@ -80,7 +80,10 @@ REVIEW_BODY=$(mktemp -t agit-review-body.XXXXXX)
 trap 'rm -rf "$WORKSPACE"; rm -f "$PROMPT_FILE" "$CLAUDE_OUT" "$REVIEW_BODY"' EXIT
 
 echo "→ Cloning $REPO @ $HEAD into $WORKSPACE..."
-gh repo clone "$REPO" "$WORKSPACE/repo" -- --depth=100 >/dev/null 2>&1
+# --no-single-branch keeps the default +refs/heads/*:refs/remotes/origin/*
+# refspec; otherwise --depth implies --single-branch and `git fetch origin
+# <non-default-branch>` only updates FETCH_HEAD, breaking the checkout below.
+gh repo clone "$REPO" "$WORKSPACE/repo" -- --depth=100 --no-single-branch >/dev/null 2>&1
 cd "$WORKSPACE/repo"
 git fetch --quiet origin "$HEAD" "$BASE"
 git checkout --quiet "$HEAD"
